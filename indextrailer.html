@@ -1,0 +1,263 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eco-Genius</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/babel-standalone@7.22.10/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=places"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // Firebase configuration (replace with your own config)
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "eco-genius.firebaseapp.com",
+      projectId: "eco-genius",
+      storageBucket: "eco-genius.appspot.com",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    // Initialize Firebase
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    const EcoGenius = () => {
+      const [location, setLocation] = useState(null);
+      const [appliances, setAppliances] = useState([{ name: '', hours: 0 }]);
+      const [energyPlan, setEnergyPlan] = useState(null);
+      const [progress, setProgress] = useState(0);
+      const [alerts, setAlerts] = useState({ highUsage: false, renewableReminder: false });
+
+      // Get live location
+      useEffect(() => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              setLocation({
+                lat: position.coords.latitude,
+                lng: position.coords.longitude
+              });
+            },
+            (error) => console.error("Location error:", error)
+          );
+        }
+      }, []);
+
+      // Initialize Google Map
+      useEffect(() => {
+        if (location) {
+          const map = new google.maps.Map(document.getElementById('map'), {
+            center: location,
+            zoom: 12
+          });
+          new google.maps.Marker({ position: location, map });
+        }
+      }, [location]);
+
+      // Handle appliance input
+      const addAppliance = () => {
+        setAppliances([...appliances, { name: '', hours: 0 }]);
+      };
+
+      const updateAppliance = (index, field, value) => {
+        const updated = [...appliances];
+        updated[index][field] = value;
+        setAppliances(updated);
+      };
+
+      // Generate energy plan
+      const generatePlan = async () => {
+        const totalHours = appliances.reduce((sum, app) => sum + Number(app.hours), 0);
+        let renewable = 'Solar';
+        if (location?.lat > 50) renewable = 'Wind'; // Example logic
+        else if (location?.lat < 10) renewable = 'Hydropower';
+
+        const plan = {
+          renewable,
+          totalHours,
+          suggestions: `Switch to ${renewable} energy. Optimize usage by reducing ${Math.max(...appliances.map(a => a.hours))}h appliance.`
+        };
+
+        // Save to Firestore
+        await db.collection('plans').add({
+          userId: 'demo-user',
+          location,
+          appliances,
+          plan,
+          timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        });
+
+        setEnergyPlan(plan);
+        setProgress(Math.min(totalHours / 100, 1) * 100); // Example progress
+      };
+
+      // Handle alerts
+      const toggleAlert = (type) => {
+        setAlerts({ ...alerts, [type]: !alerts[type] });
+      };
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-green-400 to-blue-500 p-6">
+          <h1 className="text-4xl font-bold text-white text-center mb-8 animate-pulse">
+            Eco-Genius
+          </h1>
+
+          {/* Location Section */}
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-6 transform hover:scale-105 transition-transform">
+            <h2 className="text-2xl font-semibold mb-4">Your Location</h2>
+            <div id="map" className="h-64 w-full rounded"></div>
+            {location ? (
+              <p className="mt-4 text-gray-700">
+                Detected: ({location.lat.toFixed(2)}, {location.lng.toFixed(2)})
+              </p>
+            ) : (
+              <p className="mt-4 text-gray-700">Fetching location...</p>
+            )}
+          </div>
+
+          {/* Appliance Input */}
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 className="text-2xl font-semibold mb-4">Appliance Usage</h2>
+            {appliances.map((app, index) => (
+              <div key={index} className="flex gap-4 mb-4 animate-fade-in">
+                <input
+                  type="text"
+                  placeholder="Appliance Name"
+                  value={app.name}
+                  onChange={(e) => updateAppliance(index, 'name', e.target.value)}
+                  className="p-2 border rounded w-1/2"
+                />
+                <input
+                  type="number"
+                  placeholder="Hours/Month"
+                  value={app.hours}
+                  onChange={(e) => updateAppliance(index, 'hours', e.target.value)}
+                  className="p-2 border rounded w-1/2"
+                />
+              </div>
+            ))}
+            <button
+              onClick={addAppliance}
+              className="bg-green-500 text-white p-2 rounded hover:bg-green-600 transition-colors"
+            >
+              Add Appliance
+            </button>
+          </div>
+
+          {/* Alerts Customization */}
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 className="text-2xl font-semibold mb-4">Custom Alerts</h2>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={alerts.highUsage}
+                onChange={() => toggleAlert('highUsage')}
+              />
+              High Usage Alerts
+            </label>
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={alerts.renewableReminder}
+                onChange={() => toggleAlert('renewableReminder')}
+              />
+              Renewable Energy Reminders
+            </label>
+          </div>
+
+          {/* Progress Bar & Gamification */}
+          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+            <h2 className="text-2xl font-semibold mb-4">Your Progress</h2>
+            <div className="w-full bg-gray-200 rounded-full h-4">
+              <div
+                className="bg-green-500 h-4 rounded-full transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              ></div>
+            </div>
+            <p className="mt-2">Eco Points: {Math.round(progress * 10)}</p>
+          </div>
+
+          {/* Generate Plan */}
+          <button
+            onClick={generatePlan}
+            className="bg-blue-500 text-white p-4 rounded-lg w-full hover:bg-blue-600 transition-colors animate-bounce"
+          >
+            Generate Energy Plan
+          </button>
+
+          {/* Energy Plan Output */}
+          {energyPlan && (
+            <div className="bg-white rounded-lg shadow-lg p-6 mt-6 animate-fade-in">
+              <h2 className="text-2xl font-semibold mb-4">Your Energy Plan</h2>
+              <p><strong>Recommended Renewable:</strong> {energyPlan.renewable}</p>
+              <p><strong>Total Usage:</strong> {energyPlan.totalHours} hours/month</p>
+              <p><strong>Suggestions:</strong> {energyPlan.suggestions}</p>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    ReactDOM.render(<EcoGenius />, document.getElementById('root'));
+  </script>
+
+  <style>
+    @keyframes fade-in {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in {
+      animation: fade-in 0.5s ease-in;
+    }
+  </style>
+</body>
+</html>
